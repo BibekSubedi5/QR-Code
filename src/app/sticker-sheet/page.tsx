@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import jsQR from 'jsqr';
 
 export default function StickerSheetPage() {
   const [qrImageUrl, setQrImageUrl] = useState('');
@@ -9,6 +10,83 @@ export default function StickerSheetPage() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [isValidQr, setIsValidQr] = useState(false);
+  const [inputMode, setInputMode] = useState<'url' | 'upload'>('url');
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [uploadPreview, setUploadPreview] = useState<string | null>(null);
+  const [decodedUrl, setDecodedUrl] = useState('');
+  const [isScanning, setIsScanning] = useState(false);
+  const [urlType, setUrlType] = useState<'qr-image' | 'website' | null>(null);
+  const [generatedQrUrl, setGeneratedQrUrl] = useState('');
+  const [urlDisplayText, setUrlDisplayText] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Check if URL is likely a QR code image URL
+  const isQrImageUrl = (url: string): boolean => {
+    const lowerUrl = url.toLowerCase();
+    // Check for common QR code API patterns
+    if (lowerUrl.includes('qrserver.com') || 
+        lowerUrl.includes('qrcode') || 
+        lowerUrl.includes('api.qr') ||
+        lowerUrl.includes('chart.googleapis.com/chart?') && lowerUrl.includes('qr')) {
+      return true;
+    }
+    // Check for image file extensions
+    if (/\.(png|jpg|jpeg|gif|svg|webp)(\?|$)/i.test(url)) {
+      return true;
+    }
+    return false;
+  };
+
+  // Generate QR code URL for a website
+  const generateQrCodeUrl = (websiteUrl: string): string => {
+    const encodedUrl = encodeURIComponent(websiteUrl);
+    return `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodedUrl}`;
+  };
+
+  // Handle URL input change with auto-detection
+  const handleUrlChange = (url: string) => {
+    setQrImageUrl(url);
+    setError('');
+    setIsValidQr(false);
+    setUrlType(null);
+    setGeneratedQrUrl('');
+    setUrlDisplayText('');
+
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) return;
+
+    try {
+      new URL(trimmedUrl);
+      
+      if (isQrImageUrl(trimmedUrl)) {
+        // It's a QR code image URL
+        setUrlType('qr-image');
+        // Extract data param if exists (for qrserver URLs)
+        try {
+          const parsed = new URL(trimmedUrl);
+          setUrlDisplayText(parsed.searchParams.get('data') || '');
+        } catch {
+          setUrlDisplayText('');
+        }
+      } else {
+        // It's a regular website URL - generate QR code for it
+        setUrlType('website');
+        setUrlDisplayText(trimmedUrl);
+        setGeneratedQrUrl(generateQrCodeUrl(trimmedUrl));
+      }
+    } catch {
+      // Invalid URL format
+      setUrlType(null);
+    }
+  };
+
+  // Get the actual QR image URL to use (either direct or generated)
+  const getEffectiveQrUrl = (): string => {
+    if (urlType === 'website' && generatedQrUrl) {
+      return generatedQrUrl;
+    }
+    return qrImageUrl.trim();
+  };
 
   const getDisplayText = (url: string): string => {
     try {
@@ -18,35 +96,184 @@ export default function StickerSheetPage() {
     }
   };
 
+  // Scan QR code from image, extract URL, and crop only the QR code pattern (no black border)
+  const scanAndCropQRCode = (imageDataUrl: string): Promise<{ data: string; croppedImage: string } | null> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(null);
+          return;
+        }
+
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+        if (code) {
+          // Get QR code corner positions
+          const { topLeftCorner, topRightCorner, bottomLeftCorner, bottomRightCorner } = code.location;
+          
+          // Calculate the QR code size based on detected corners
+          const qrLeft = Math.min(topLeftCorner.x, bottomLeftCorner.x);
+          const qrTop = Math.min(topLeftCorner.y, topRightCorner.y);
+          const qrRight = Math.max(topRightCorner.x, bottomRightCorner.x);
+          const qrBottom = Math.max(bottomLeftCorner.y, bottomRightCorner.y);
+          
+          const qrWidth = qrRight - qrLeft;
+          const qrHeight = qrBottom - qrTop;
+          
+          // QR codes have a "quiet zone" (white margin) - we need to add it
+          // Standard quiet zone is 4 modules. Estimate module size from QR dimensions
+          const moduleSize = qrWidth / 25; // Approximate for typical QR
+          const quietZone = moduleSize * 4; // Standard 4-module quiet zone
+          
+          // Create final canvas with white background and proper quiet zone
+          const finalSize = Math.max(qrWidth, qrHeight) + (quietZone * 2);
+          const cropCanvas = document.createElement('canvas');
+          cropCanvas.width = finalSize;
+          cropCanvas.height = finalSize;
+          const cropCtx = cropCanvas.getContext('2d');
+          
+          if (cropCtx) {
+            // Fill with pure white background
+            cropCtx.fillStyle = '#FFFFFF';
+            cropCtx.fillRect(0, 0, finalSize, finalSize);
+            
+            // Center the QR code with quiet zone margin
+            const offsetX = quietZone + (finalSize - quietZone * 2 - qrWidth) / 2;
+            const offsetY = quietZone + (finalSize - quietZone * 2 - qrHeight) / 2;
+            
+            // Draw only the QR code pattern (exactly from detected corners)
+            cropCtx.drawImage(
+              img,
+              qrLeft, qrTop, qrWidth, qrHeight,
+              offsetX, offsetY, qrWidth, qrHeight
+            );
+            
+            resolve({
+              data: code.data,
+              croppedImage: cropCanvas.toDataURL('image/png')
+            });
+          } else {
+            resolve({ data: code.data, croppedImage: imageDataUrl });
+          }
+        } else {
+          resolve(null);
+        }
+      };
+      img.onerror = () => resolve(null);
+      img.src = imageDataUrl;
+    });
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setError('Please upload an image file');
+      return;
+    }
+
+    setUploadedFile(file);
+    setError('');
+    setIsScanning(true);
+    setDecodedUrl('');
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result as string;
+
+      // Scan QR code and crop only the QR portion
+      const result = await scanAndCropQRCode(dataUrl);
+      setIsScanning(false);
+
+      if (result) {
+        setUploadPreview(result.croppedImage); // Use cropped QR image
+        setDecodedUrl(result.data);
+        setIsValidQr(true);
+      } else {
+        setUploadPreview(dataUrl); // Show original if no QR found
+        setError('No QR code detected in image. Please upload a clear QR code image.');
+        setIsValidQr(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const clearUpload = () => {
+    setUploadedFile(null);
+    setUploadPreview(null);
+    setIsValidQr(false);
+    setDecodedUrl('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   const handleGenerate = async () => {
-    const trimmedUrl = qrImageUrl.trim();
-    
-    if (!trimmedUrl) {
-      setError('Please paste a QR image URL');
-      return;
-    }
+    if (inputMode === 'url') {
+      const trimmedUrl = qrImageUrl.trim();
+      
+      if (!trimmedUrl) {
+        setError('Please paste a URL');
+        return;
+      }
 
-    try {
-      new URL(trimmedUrl);
-    } catch {
-      setError('Invalid URL format');
-      return;
-    }
+      try {
+        new URL(trimmedUrl);
+      } catch {
+        setError('Invalid URL format');
+        return;
+      }
 
-    if (!isValidQr) {
-      setError('No QR code detected. Please use another link.');
-      return;
+      if (!isValidQr) {
+        setError('No QR code detected. Please wait for image to load or check the URL.');
+        return;
+      }
+    } else {
+      if (!uploadedFile || !uploadPreview) {
+        setError('Please upload a QR code image');
+        return;
+      }
+      if (!isValidQr || !decodedUrl) {
+        setError('No QR code detected. Please upload a clear QR code image.');
+        return;
+      }
     }
 
     setIsGenerating(true);
     setError('');
 
     try {
-      const response = await fetch('/api/generate-stickers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ qrImageUrl: trimmedUrl }),
-      });
+      let response;
+      
+      if (inputMode === 'url') {
+        // Use the effective QR URL (either direct image or generated from website URL)
+        const effectiveUrl = getEffectiveQrUrl();
+        response = await fetch('/api/generate-stickers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            qrImageUrl: effectiveUrl,
+            // For website URLs, pass the website as label text
+            ...(urlType === 'website' && { labelText: urlDisplayText })
+          }),
+        });
+      } else {
+        response = await fetch('/api/generate-stickers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            qrImageBase64: uploadPreview,
+            labelText: decodedUrl 
+          }),
+        });
+      }
 
       if (!response.ok) {
         const contentType = response.headers.get('content-type') || '';
@@ -72,8 +299,9 @@ export default function StickerSheetPage() {
   };
 
   const closeModal = () => setShowModal(false);
-  const displayText = getDisplayText(qrImageUrl);
+  const displayText = inputMode === 'url' ? urlDisplayText : decodedUrl;
   const downloadFilename = `stickers-${displayText.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20) || 'qr'}.pdf`;
+  const canGenerate = inputMode === 'url' ? (qrImageUrl.trim() && isValidQr) : (uploadedFile && uploadPreview && isValidQr);
 
   return (
     <div className="min-h-screen bg-gradient-to-br  flex items-center justify-center p-4">
@@ -91,44 +319,155 @@ export default function StickerSheetPage() {
 
         {/* Input */}
         <div className="space-y-5">
-          <div>
-            <label htmlFor="qrImageUrl" className="block text-sm font-semibold text-gray-700 mb-2">
-              QR Image URL
-            </label>
-            <textarea
-              id="qrImageUrl"
-              value={qrImageUrl}
-              onChange={(e) => { setQrImageUrl(e.target.value); setError(''); setIsValidQr(false); }}
-              placeholder="Paste your QR image URL here..."
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none font-mono text-sm transition-all resize-none"
-              rows={2}
-            />
+          {/* Toggle Tabs */}
+          <div className="flex bg-gray-100 rounded-xl p-1">
+            <button
+              onClick={() => { setInputMode('url'); setError(''); }}
+              className={`flex-1 py-2 px-4 rounded-lg font-medium text-sm transition-all ${inputMode === 'url' ? 'bg-white text-orange-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              Paste URL
+            </button>
+            <button
+              onClick={() => { setInputMode('upload'); setError(''); }}
+              className={`flex-1 py-2 px-4 rounded-lg font-medium text-sm transition-all ${inputMode === 'upload' ? 'bg-white text-orange-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              Upload Image
+            </button>
           </div>
 
-          {displayText && (
-            <div className="bg-orange-50 border border-orange-200 rounded-xl p-3">
-              <p className="text-sm text-orange-800">
-                <span className="font-semibold">Label:</span> {displayText}
-              </p>
-            </div>
-          )}
+          {/* URL Input Mode */}
+          {inputMode === 'url' && (
+            <>
+              <div>
+                <label htmlFor="qrImageUrl" className="block text-sm font-semibold text-gray-700 mb-2">
+                  Paste URL
+                </label>
+                <textarea
+                  id="qrImageUrl"
+                  value={qrImageUrl}
+                  onChange={(e) => handleUrlChange(e.target.value)}
+                  placeholder="Paste QR image URL or website URL..."
+                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none font-mono text-sm transition-all resize-none"
+                  rows={2}
+                />
+                {urlType && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    {urlType === 'qr-image' ? '🖼️ QR image detected' : '🌐 Website URL - QR code will be generated'}
+                  </p>
+                )}
+              </div>
 
-          {qrImageUrl && (
-            <div className="flex justify-center">
-              <img
-                src={qrImageUrl}
-                alt="QR Preview"
-                className={`w-28 h-28 border-2 rounded-xl shadow-sm ${isValidQr ? 'border-green-400' : 'border-gray-200'}`}
-                onLoad={() => setIsValidQr(true)}
-                onError={() => { setIsValidQr(false); setError('No QR code detected. Please use another link.'); }}
-                style={{ display: isValidQr ? 'block' : 'none' }}
-              />
-              {!isValidQr && !error && (
-                <div className="w-28 h-28 border-2 border-dashed border-gray-300 rounded-xl flex items-center justify-center bg-gray-50">
-                  <span className="text-gray-400 text-xs text-center px-2">Loading...</span>
+              {urlDisplayText && (
+                <div className="bg-orange-50 border border-orange-200 rounded-xl p-3">
+                  <p className="text-sm text-orange-800">
+                    <span className="font-semibold">Label:</span> {urlDisplayText}
+                  </p>
                 </div>
               )}
-            </div>
+
+              {(qrImageUrl && urlType === 'qr-image') && (
+                <div className="flex justify-center">
+                  <img
+                    src={qrImageUrl}
+                    alt="QR Preview"
+                    className={`w-28 h-28 border-2 rounded-xl shadow-sm ${isValidQr ? 'border-green-400' : 'border-gray-200'}`}
+                    onLoad={() => setIsValidQr(true)}
+                    onError={() => { setIsValidQr(false); setError('No QR code detected. Please use another link.'); }}
+                    style={{ display: isValidQr ? 'block' : 'none' }}
+                  />
+                  {!isValidQr && !error && (
+                    <div className="w-28 h-28 border-2 border-dashed border-gray-300 rounded-xl flex items-center justify-center bg-gray-50">
+                      <span className="text-gray-400 text-xs text-center px-2">Loading...</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {(generatedQrUrl && urlType === 'website') && (
+                <div className="flex justify-center">
+                  <img
+                    src={generatedQrUrl}
+                    alt="Generated QR"
+                    className={`w-28 h-28 border-2 rounded-xl shadow-sm ${isValidQr ? 'border-green-400' : 'border-gray-200'}`}
+                    onLoad={() => setIsValidQr(true)}
+                    onError={() => { setIsValidQr(false); setError('Failed to generate QR code.'); }}
+                    style={{ display: isValidQr ? 'block' : 'none' }}
+                  />
+                  {!isValidQr && !error && (
+                    <div className="w-28 h-28 border-2 border-dashed border-gray-300 rounded-xl flex items-center justify-center bg-gray-50">
+                      <span className="text-gray-400 text-xs text-center px-2">Generating QR...</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Upload Mode */}
+          {inputMode === 'upload' && (
+            <>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Upload QR Code Image
+                </label>
+                {!uploadPreview ? (
+                  <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-xl cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors">
+                    <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                      <svg className="w-8 h-8 mb-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                      </svg>
+                      <p className="text-sm text-gray-500">Click to upload QR code</p>
+                      <p className="text-xs text-gray-400 mt-1">PNG, JPG, or GIF</p>
+                    </div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      onChange={handleFileUpload}
+                    />
+                  </label>
+                ) : (
+                  <div className="relative">
+                    <div className="flex justify-center">
+                      <img
+                        src={uploadPreview}
+                        alt="Uploaded QR"
+                        className={`w-28 h-28 border-2 rounded-xl shadow-sm object-contain bg-white ${isValidQr ? 'border-green-400' : 'border-red-400'}`}
+                      />
+                    </div>
+                    <button
+                      onClick={clearUpload}
+                      className="absolute top-0 right-1/2 translate-x-[70px] -translate-y-2 p-1 bg-red-500 text-white rounded-full hover:bg-red-600 transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {isScanning && (
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+                  <p className="text-sm text-blue-800 flex items-center gap-2">
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    Scanning QR code...
+                  </p>
+                </div>
+              )}
+
+              {decodedUrl && !isScanning && (
+                <div className="bg-green-50 border border-green-200 rounded-xl p-3">
+                  <p className="text-sm text-green-800">
+                    <span className="font-semibold">Detected URL:</span> {decodedUrl}
+                  </p>
+                </div>
+              )}
+            </>
           )}
 
           {error && (
@@ -139,7 +478,7 @@ export default function StickerSheetPage() {
 
           <button
             onClick={handleGenerate}
-            disabled={isGenerating || !qrImageUrl.trim()}
+            disabled={isGenerating || !canGenerate}
             className="w-full bg-orange-500 text-white py-4 px-6 rounded-xl font-semibold text-lg hover:bg-orange-600 disabled:bg-orange-300 disabled:cursor-not-allowed transition-all shadow-lg hover:shadow-xl"
           >
             {isGenerating ? (
@@ -154,7 +493,7 @@ export default function StickerSheetPage() {
           </button>
 
           <p className="text-xs text-gray-400 text-center">
-            Paste QR image URL • 12 stickers per A4 sheet
+            {inputMode === 'url' ? 'Paste QR image or website URL' : 'Upload QR code image'} • 12 stickers per A4 sheet
           </p>
         </div>
       </div>

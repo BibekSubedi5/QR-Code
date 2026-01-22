@@ -38,6 +38,18 @@ async function fetchQRImage(imageUrl: string): Promise<{ imageBuffer: Buffer; di
   };
 }
 
+// Parse base64 image data
+function parseBase64Image(base64String: string): { buffer: Buffer; mimeType: string } {
+  const matches = base64String.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+  if (!matches || matches.length !== 3) {
+    throw new Error('Invalid base64 image format');
+  }
+  return {
+    mimeType: matches[1],
+    buffer: Buffer.from(matches[2], 'base64'),
+  };
+}
+
 // Template configuration - sticker positions on A4 sheet
 const TEMPLATE_CONFIG = {
   qrCodePositions: [
@@ -59,13 +71,34 @@ const mmToPt = (mm: number) => mm * 72 / 25.4;
 
 export async function POST(request: NextRequest) {
   try {
-    const { qrImageUrl } = await request.json();
+    const body = await request.json();
+    const { qrImageUrl, qrImageBase64, labelText } = body;
 
-    if (!qrImageUrl || !validateUrl(qrImageUrl)) {
-      return NextResponse.json({ error: 'Invalid or missing QR image URL' }, { status: 400 });
+    let imageBuffer: Buffer;
+    let displayText: string;
+    let mimeType = 'image/png';
+
+    // Handle URL-based input
+    if (qrImageUrl) {
+      if (!validateUrl(qrImageUrl)) {
+        return NextResponse.json({ error: 'Invalid QR image URL' }, { status: 400 });
+      }
+      const result = await fetchQRImage(qrImageUrl);
+      imageBuffer = result.imageBuffer;
+      // Use labelText if provided (for website URLs), otherwise use extracted displayText
+      displayText = labelText || result.displayText;
     }
-
-    const { imageBuffer, displayText } = await fetchQRImage(qrImageUrl);
+    // Handle base64 image upload
+    else if (qrImageBase64) {
+      const parsed = parseBase64Image(qrImageBase64);
+      imageBuffer = parsed.buffer;
+      mimeType = parsed.mimeType;
+      displayText = labelText || '';
+    }
+    // No valid input
+    else {
+      return NextResponse.json({ error: 'Please provide a QR image URL or upload an image' }, { status: 400 });
+    }
 
     // Load template PDF
     const templatePath = path.join(process.cwd(), 'uploads', 'template.pdf');
@@ -77,7 +110,13 @@ export async function POST(request: NextRequest) {
     const page = pdfDoc.getPages()[0];
     const { height } = page.getSize();
 
-    const qrImage = await pdfDoc.embedPng(imageBuffer);
+    // Embed QR image (handle both PNG and JPG)
+    let qrImage;
+    if (mimeType.includes('jpeg') || mimeType.includes('jpg')) {
+      qrImage = await pdfDoc.embedJpg(imageBuffer);
+    } else {
+      qrImage = await pdfDoc.embedPng(imageBuffer);
+    }
     const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
     const qrSizePt = mmToPt(TEMPLATE_CONFIG.qrCodeSize);
 
