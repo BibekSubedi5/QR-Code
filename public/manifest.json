@@ -1,0 +1,9 @@
+{
+  "name": "QR Code Generator",
+  "short_name": "QR Generator",
+  "description": "Professional QR Code Generator with A4 Sticker Sheet support",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#3b82f6"
+}
