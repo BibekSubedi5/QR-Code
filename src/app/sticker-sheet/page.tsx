@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+/* eslint-disable @next/next/no-img-element */
+import { useState, useRef } from 'react';
 import jsQR from 'jsqr';
 
 export default function StickerSheetPage() {
@@ -86,14 +87,6 @@ export default function StickerSheetPage() {
       return generatedQrUrl;
     }
     return qrImageUrl.trim();
-  };
-
-  const getDisplayText = (url: string): string => {
-    try {
-      return new URL(url).searchParams.get('data') || '';
-    } catch {
-      return '';
-    }
   };
 
   // Scan QR code from image, extract URL, and crop only the QR code pattern (no black border)
