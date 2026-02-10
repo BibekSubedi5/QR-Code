@@ -86,14 +86,14 @@ export async function POST(request: NextRequest) {
       const result = await fetchQRImage(qrImageUrl);
       imageBuffer = result.imageBuffer;
       // Use labelText if provided (for website URLs), otherwise use extracted displayText
-      displayText = labelText || result.displayText;
+      displayText = (labelText || result.displayText).toLowerCase();
     }
     // Handle base64 image upload
     else if (qrImageBase64) {
       const parsed = parseBase64Image(qrImageBase64);
       imageBuffer = parsed.buffer;
       mimeType = parsed.mimeType;
-      displayText = labelText || '';
+      displayText = (labelText || '').toLowerCase();
     }
     // No valid input
     else {

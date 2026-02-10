@@ -44,6 +44,24 @@ export default function StickerSheetPage() {
     return `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodedUrl}`;
   };
 
+  // Clean up URL for display - remove protocol, www, trailing slash
+  const getCleanDisplayUrl = (url: string): string => {
+    return url
+      .replace(/^https?:\/\//, '') // Remove http:// or https://
+      .replace(/^www\./, '')        // Remove www.
+      .replace(/\/+$/, '');         // Remove trailing slashes
+  };
+
+  // Normalize URL - add protocol if missing
+  const normalizeUrl = (url: string): string => {
+    const trimmed = url.trim();
+    // If URL starts with www. or looks like a domain, add https://
+    if (/^www\./i.test(trimmed) || /^[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}/i.test(trimmed)) {
+      return `https://${trimmed}`;
+    }
+    return trimmed;
+  };
+
   // Handle URL input change with auto-detection
   const handleUrlChange = (url: string) => {
     setQrImageUrl(url);
@@ -56,24 +74,30 @@ export default function StickerSheetPage() {
     const trimmedUrl = url.trim();
     if (!trimmedUrl) return;
 
+    // Normalize URL (add https:// if missing)
+    const normalizedUrl = normalizeUrl(trimmedUrl);
+
     try {
-      new URL(trimmedUrl);
+      new URL(normalizedUrl);
       
-      if (isQrImageUrl(trimmedUrl)) {
+      if (isQrImageUrl(normalizedUrl)) {
         // It's a QR code image URL
         setUrlType('qr-image');
         // Extract data param if exists (for qrserver URLs)
         try {
-          const parsed = new URL(trimmedUrl);
-          setUrlDisplayText(parsed.searchParams.get('data') || '');
+          const parsed = new URL(normalizedUrl);
+          const dataParam = parsed.searchParams.get('data') || '';
+          // Clean up the data param for display too
+          setUrlDisplayText(getCleanDisplayUrl(dataParam));
         } catch {
           setUrlDisplayText('');
         }
       } else {
         // It's a regular website URL - generate QR code for it
         setUrlType('website');
-        setUrlDisplayText(trimmedUrl);
-        setGeneratedQrUrl(generateQrCodeUrl(trimmedUrl));
+        // Use clean display text but full URL for QR generation
+        setUrlDisplayText(getCleanDisplayUrl(normalizedUrl));
+        setGeneratedQrUrl(generateQrCodeUrl(normalizedUrl));
       }
     } catch {
       // Invalid URL format
