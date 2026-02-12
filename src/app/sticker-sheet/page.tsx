@@ -377,7 +377,7 @@ export default function StickerSheetPage() {
               {urlDisplayText && (
                 <div className="bg-orange-50 border border-orange-200 rounded-xl p-3">
                   <p className="text-sm text-orange-800">
-                    <span className="font-semibold">Label:</span> {urlDisplayText}
+                    <span className="font-semibold">Labela:</span> {urlDisplayText.toLowerCase()}
                   </p>
                 </div>
               )}
